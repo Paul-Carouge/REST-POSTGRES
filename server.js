@@ -461,6 +461,104 @@ app.delete("/users/:id", async (req, res) => {
   }
 });
 
+
+// Récupération de tous les jeux Free-to-Play avec filtres optionnels
+app.get("/f2p-games", async (req, res) => {
+  try {
+    const { platform, category, sortBy, tag } = req.query;
+    
+    // Construire l'URL de l'API FreeToGame avec les paramètres
+    let apiUrl = "https://www.freetogame.com/api/games";
+    const params = new URLSearchParams();
+    
+    if (platform) params.append("platform", platform);
+    if (category) params.append("category", category);
+    if (sortBy) params.append("sort-by", sortBy);
+    
+    // Si on a des tags, utiliser l'endpoint /filter
+    if (tag) {
+      apiUrl = "https://www.freetogame.com/api/filter";
+      params.append("tag", tag);
+      if (platform) params.append("platform", platform);
+      if (sortBy) params.append("sort", sortBy);
+    }
+    
+    if (params.toString()) {
+      apiUrl += "?" + params.toString();
+    }
+
+    console.log(`🔄 Appel API FreeToGame: ${apiUrl}`);
+    
+    const response = await fetch(apiUrl);
+    
+    if (!response.ok) {
+      throw new Error(`Erreur API FreeToGame: ${response.status} ${response.statusText}`);
+    }
+    
+    const games = await response.json();
+    
+    // Ajouter des informations de pagination si nécessaire
+    const result = {
+      games,
+      total: games.length,
+      filters: {
+        platform: platform || "all",
+        category: category || "all",
+        sortBy: sortBy || "relevance",
+        tag: tag || null
+      },
+      apiSource: "FreeToGame API"
+    };
+    
+    res.json(result);
+  } catch (error) {
+    console.error("Erreur lors de la récupération des jeux Free-to-Play:", error);
+    res.status(500).json({ 
+      error: "Erreur lors de la récupération des jeux",
+      details: error.message 
+    });
+  }
+});
+
+// Récupération des détails d'un jeu spécifique grace à son ID
+app.get("/f2p-games/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    if (!id || isNaN(id)) {
+      return res.status(400).json({ error: "ID de jeu invalide" });
+    }
+    
+    const apiUrl = `https://www.freetogame.com/api/game?id=${id}`;
+    
+    console.log(`🔄 Appel API FreeToGame pour le jeu ID ${id}: ${apiUrl}`);
+    
+    const response = await fetch(apiUrl);
+    
+    if (!response.ok) {
+      if (response.status === 404) {
+        return res.status(404).json({ error: "Jeu non trouvé" });
+      }
+      throw new Error(`Erreur API FreeToGame: ${response.status} ${response.statusText}`);
+    }
+    
+    const game = await response.json();
+    
+    const result = {
+      game,
+      apiSource: "FreeToGame API"
+    };
+    
+    res.json(result);
+  } catch (error) {
+    console.error("Erreur lors de la récupération du jeu:", error);
+    res.status(500).json({ 
+      error: "Erreur lors de la récupération du jeu",
+      details: error.message 
+    });
+  }
+});
+
 // Démarrage du serveur avec initialisation de la base de données
 async function startServer() {
   await initializeDatabase();
