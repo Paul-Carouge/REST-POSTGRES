@@ -40,8 +40,6 @@ app.get("/", (req, res) => {
   res.send("Hello World!");
 });
 
-
-
 // Récupération de tous les produits avec pagination de 10 produits par page
 app.get("/products", async (req, res) => {
   try {
