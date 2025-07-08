@@ -34,6 +34,19 @@ async function initializeDatabase() {
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `;
+
+    // Créer la table orders si elle n'existe pas
+    await sql`
+      CREATE TABLE IF NOT EXISTS orders (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        product_ids INTEGER[] NOT NULL,
+        total DECIMAL(10,2) NOT NULL CHECK (total >= 0),
+        payment BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `;
     
     console.log("🟢 Base de données initialisée avec succès");
   } catch (error) {
@@ -45,6 +58,36 @@ async function initializeDatabase() {
 // Fonction de hachage SHA512
 function hashPassword(password) {
   return crypto.createHash('sha512').update(password).digest('hex');
+}
+
+// Fonction pour calculer le total avec TVA (20%)
+function calculateTotalWithVAT(productIds, products) {
+  const subtotal = productIds.reduce((sum, productId) => {
+    const product = products.find(p => p.id === productId);
+    return sum + (product ? product.price : 0);
+  }, 0);
+  
+  return Math.round((subtotal * 1.2) * 100) / 100; // TVA 20% arrondie à 2 décimales
+}
+
+// Fonction pour récupérer les détails complets d'une commande
+async function getOrderDetails(order) {
+  // Récupérer l'utilisateur
+  const [user] = await sql`
+    SELECT id, username, email, created_at, updated_at 
+    FROM users WHERE id = ${order.user_id}
+  `;
+
+  // Récupérer les produits
+  const products = await sql`
+    SELECT * FROM products WHERE id = ANY(${order.product_ids})
+  `;
+
+  return {
+    ...order,
+    user,
+    products
+  };
 }
 
 // Schemas pour les produits
@@ -73,6 +116,18 @@ const UserPartialUpdateSchema = z.object({
   username: z.string().min(3, "Le nom d'utilisateur doit contenir au moins 3 caractères").optional(),
   email: z.string().email("Format d'email invalide").optional(),
   password: z.string().min(6, "Le mot de passe doit contenir au moins 6 caractères").optional(),
+});
+
+// Schemas pour les commandes
+const OrderSchema = z.object({
+  userId: z.number().int().positive("L'ID utilisateur doit être un entier positif"),
+  productIds: z.array(z.number().int().positive("L'ID produit doit être un entier positif")).min(1, "Au moins un produit est requis"),
+});
+
+const OrderUpdateSchema = z.object({
+  userId: z.number().int().positive("L'ID utilisateur doit être un entier positif").optional(),
+  productIds: z.array(z.number().int().positive("L'ID produit doit être un entier positif")).min(1, "Au moins un produit est requis").optional(),
+  payment: z.boolean().optional(),
 });
 
 app.get("/", (req, res) => {
@@ -125,8 +180,7 @@ app.get("/products", async (req, res) => {
         if (price) {
           const maxPrice = parseFloat(price);
           if (!isNaN(maxPrice)) {
-            // Les jeux Free-to-Play ont un prix de 0, mais on peut filtrer par popularité
-            // ou garder tous les jeux car ils sont gratuits
+            // Les jeux Free-to-Play ont un prix de 0, donc on trie par popularité
             games = games.filter(game => {
               // Si le jeu a un prix, on le compare
               if (game.price) {
@@ -549,6 +603,349 @@ app.delete("/users/:id", async (req, res) => {
   }
 });
 
+
+
+// Récupération de toutes les commandes avec pagination de 10 commandes par page
+app.get("/orders", async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const offset = (page - 1) * limit;
+
+    const orders = await sql`
+      SELECT * FROM orders 
+      ORDER BY created_at DESC 
+      LIMIT ${limit} OFFSET ${offset}
+    `;
+
+    // Compter le nombre total de commandes pour la pagination
+    const [{ count }] = await sql`SELECT COUNT(*) as count FROM orders`;
+    const totalPages = Math.ceil(count / limit);
+
+    // Récupérer les détails complets pour chaque commande
+    const ordersWithDetails = await Promise.all(
+      orders.map(order => getOrderDetails(order))
+    );
+
+    res.json({
+      orders: ordersWithDetails,
+      pagination: {
+        page,
+        limit,
+        total: count,
+        totalPages,
+        hasNext: page < totalPages,
+        hasPrev: page > 1
+      }
+    });
+  } catch (error) {
+    console.error("Erreur lors de la récupération des commandes:", error);
+    res.status(500).json({ error: "Erreur du serveur" });
+  }
+});
+
+// Récupération d'une commande par son ID
+app.get("/orders/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const [order] = await sql`
+      SELECT * FROM orders WHERE id = ${id}
+    `;
+
+    // Cas où la commande n'existe pas
+    if (!order) {
+      return res.status(404).json({ error: "Commande non trouvée" });
+    }
+
+    // Récupérer les détails complets
+    const orderWithDetails = await getOrderDetails(order);
+
+    res.json(orderWithDetails);
+  } catch (error) {
+    console.error("Erreur lors de la récupération de la commande:", error);
+    res.status(500).json({ error: "Erreur du serveur" });
+  }
+});
+
+// Création d'une nouvelle commande
+app.post("/orders", async (req, res) => {
+  try {
+    const result = await OrderSchema.safeParse(req.body);
+    
+    if (result.success) {
+      const { userId, productIds } = result.data;
+
+      // Vérifier si l'utilisateur existe
+      const [user] = await sql`
+        SELECT id FROM users WHERE id = ${userId}
+      `;
+
+      if (!user) {
+        return res.status(404).json({ error: "Utilisateur non trouvé" });
+      }
+
+      // Vérifier si tous les produits existent
+      const products = await sql`
+        SELECT * FROM products WHERE id = ANY(${productIds})
+      `;
+
+      if (products.length !== productIds.length) {
+        return res.status(404).json({ 
+          error: "Un ou plusieurs produits n'existent pas" 
+        });
+      }
+
+      // Calculer le total avec TVA
+      const total = calculateTotalWithVAT(productIds, products);
+
+      const [newOrder] = await sql`
+        INSERT INTO orders (user_id, product_ids, total, payment)
+        VALUES (${userId}, ${productIds}, ${total}, FALSE)
+        RETURNING *
+      `;
+
+      // Récupérer les détails complets
+      const orderWithDetails = await getOrderDetails(newOrder);
+
+      res.status(201).json(orderWithDetails);
+    } else {
+      res.status(400).json({ 
+        error: "Données invalides", 
+        details: result.error.errors 
+      });
+    }
+  } catch (error) {
+    console.error("Erreur lors de la création de la commande:", error);
+    res.status(500).json({ error: "Erreur du serveur" });
+  }
+});
+
+// Mise à jour complète d'une commande
+app.put("/orders/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await OrderUpdateSchema.safeParse(req.body);
+    
+    if (result.success) {
+      const { userId, productIds, payment } = result.data;
+      
+      // Vérifier si la commande existe
+      const [existingOrder] = await sql`
+        SELECT * FROM orders WHERE id = ${id}
+      `;
+
+      if (!existingOrder) {
+        return res.status(404).json({ error: "Commande non trouvée" });
+      }
+
+      // Préparer les données de mise à jour
+      let updateData = {};
+      let newTotal = existingOrder.total;
+
+      if (userId) {
+        // Vérifier si l'utilisateur existe
+        const [user] = await sql`
+          SELECT id FROM users WHERE id = ${userId}
+        `;
+        if (!user) {
+          return res.status(404).json({ error: "Utilisateur non trouvé" });
+        }
+        updateData.user_id = userId;
+      }
+
+      if (productIds) {
+        // Vérifier si tous les produits existent
+        const products = await sql`
+          SELECT * FROM products WHERE id = ANY(${productIds})
+        `;
+        if (products.length !== productIds.length) {
+          return res.status(404).json({ 
+            error: "Un ou plusieurs produits n'existent pas" 
+          });
+        }
+        updateData.product_ids = productIds;
+        newTotal = calculateTotalWithVAT(productIds, products);
+      }
+
+      if (payment !== undefined) {
+        updateData.payment = payment;
+      }
+
+      // Construire la requête SQL de manière conditionnelle
+      let updatedOrder;
+      if (userId && productIds && payment !== undefined) {
+        [updatedOrder] = await sql`
+          UPDATE orders SET user_id = ${userId}, product_ids = ${productIds}, total = ${newTotal}, payment = ${payment}, updated_at = CURRENT_TIMESTAMP WHERE id = ${id} RETURNING *
+        `;
+      } else if (userId && productIds) {
+        [updatedOrder] = await sql`
+          UPDATE orders SET user_id = ${userId}, product_ids = ${productIds}, total = ${newTotal}, updated_at = CURRENT_TIMESTAMP WHERE id = ${id} RETURNING *
+        `;
+      } else if (userId && payment !== undefined) {
+        [updatedOrder] = await sql`
+          UPDATE orders SET user_id = ${userId}, payment = ${payment}, updated_at = CURRENT_TIMESTAMP WHERE id = ${id} RETURNING *
+        `;
+      } else if (productIds && payment !== undefined) {
+        [updatedOrder] = await sql`
+          UPDATE orders SET product_ids = ${productIds}, total = ${newTotal}, payment = ${payment}, updated_at = CURRENT_TIMESTAMP WHERE id = ${id} RETURNING *
+        `;
+      } else if (userId) {
+        [updatedOrder] = await sql`
+          UPDATE orders SET user_id = ${userId}, updated_at = CURRENT_TIMESTAMP WHERE id = ${id} RETURNING *
+        `;
+      } else if (productIds) {
+        [updatedOrder] = await sql`
+          UPDATE orders SET product_ids = ${productIds}, total = ${newTotal}, updated_at = CURRENT_TIMESTAMP WHERE id = ${id} RETURNING *
+        `;
+      } else if (payment !== undefined) {
+        [updatedOrder] = await sql`
+          UPDATE orders SET payment = ${payment}, updated_at = CURRENT_TIMESTAMP WHERE id = ${id} RETURNING *
+        `;
+      }
+
+      // Récupérer les détails complets
+      const orderWithDetails = await getOrderDetails(updatedOrder);
+
+      res.json(orderWithDetails);
+    } else {
+      res.status(400).json({ 
+        error: "Données invalides", 
+        details: result.error.errors 
+      });
+    }
+  } catch (error) {
+    console.error("Erreur lors de la mise à jour de la commande:", error);
+    res.status(500).json({ error: "Erreur du serveur" });
+  }
+});
+
+// Mise à jour partielle d'une commande
+app.patch("/orders/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await OrderUpdateSchema.safeParse(req.body);
+    
+    if (result.success) {
+      const { userId, productIds, payment } = result.data;
+      
+      // Vérifier si la commande existe
+      const [existingOrder] = await sql`
+        SELECT * FROM orders WHERE id = ${id}
+      `;
+
+      if (!existingOrder) {
+        return res.status(404).json({ error: "Commande non trouvée" });
+      }
+
+      // Préparer les données de mise à jour
+      let updateData = {};
+      let newTotal = existingOrder.total;
+
+      if (userId) {
+        // Vérifier si l'utilisateur existe
+        const [user] = await sql`
+          SELECT id FROM users WHERE id = ${userId}
+        `;
+        if (!user) {
+          return res.status(404).json({ error: "Utilisateur non trouvé" });
+        }
+        updateData.user_id = userId;
+      }
+
+      if (productIds) {
+        // Vérifier si tous les produits existent
+        const products = await sql`
+          SELECT * FROM products WHERE id = ANY(${productIds})
+        `;
+        if (products.length !== productIds.length) {
+          return res.status(404).json({ 
+            error: "Un ou plusieurs produits n'existent pas" 
+          });
+        }
+        updateData.product_ids = productIds;
+        newTotal = calculateTotalWithVAT(productIds, products);
+      }
+
+      if (payment !== undefined) {
+        updateData.payment = payment;
+      }
+
+      // Construire la requête SQL de manière conditionnelle
+      let updatedOrder;
+      if (userId && productIds && payment !== undefined) {
+        [updatedOrder] = await sql`
+          UPDATE orders SET user_id = ${userId}, product_ids = ${productIds}, total = ${newTotal}, payment = ${payment}, updated_at = CURRENT_TIMESTAMP WHERE id = ${id} RETURNING *
+        `;
+      } else if (userId && productIds) {
+        [updatedOrder] = await sql`
+          UPDATE orders SET user_id = ${userId}, product_ids = ${productIds}, total = ${newTotal}, updated_at = CURRENT_TIMESTAMP WHERE id = ${id} RETURNING *
+        `;
+      } else if (userId && payment !== undefined) {
+        [updatedOrder] = await sql`
+          UPDATE orders SET user_id = ${userId}, payment = ${payment}, updated_at = CURRENT_TIMESTAMP WHERE id = ${id} RETURNING *
+        `;
+      } else if (productIds && payment !== undefined) {
+        [updatedOrder] = await sql`
+          UPDATE orders SET product_ids = ${productIds}, total = ${newTotal}, payment = ${payment}, updated_at = CURRENT_TIMESTAMP WHERE id = ${id} RETURNING *
+        `;
+      } else if (userId) {
+        [updatedOrder] = await sql`
+          UPDATE orders SET user_id = ${userId}, updated_at = CURRENT_TIMESTAMP WHERE id = ${id} RETURNING *
+        `;
+      } else if (productIds) {
+        [updatedOrder] = await sql`
+          UPDATE orders SET product_ids = ${productIds}, total = ${newTotal}, updated_at = CURRENT_TIMESTAMP WHERE id = ${id} RETURNING *
+        `;
+      } else if (payment !== undefined) {
+        [updatedOrder] = await sql`
+          UPDATE orders SET payment = ${payment}, updated_at = CURRENT_TIMESTAMP WHERE id = ${id} RETURNING *
+        `;
+      }
+
+      // Récupérer les détails complets
+      const orderWithDetails = await getOrderDetails(updatedOrder);
+
+      res.json(orderWithDetails);
+    } else {
+      res.status(400).json({ 
+        error: "Données invalides", 
+        details: result.error.errors 
+      });
+    }
+  } catch (error) {
+    console.error("Erreur lors de la mise à jour partielle de la commande:", error);
+    res.status(500).json({ error: "Erreur du serveur" });
+  }
+});
+
+// Suppression d'une commande
+app.delete("/orders/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const [deletedOrder] = await sql`
+      DELETE FROM orders WHERE id = ${id}
+      RETURNING *
+    `;
+
+    // Cas où la commande n'existe pas
+    if (!deletedOrder) {
+      return res.status(404).json({ error: "Commande non trouvée" });
+    }
+
+    // Récupérer les détails complets avant suppression
+    const orderWithDetails = await getOrderDetails(deletedOrder);
+
+    res.json({ 
+      message: "Commande supprimée avec succès", 
+      order: orderWithDetails 
+    });
+  } catch (error) {
+    console.error("Erreur lors de la suppression de la commande:", error);
+    res.status(500).json({ error: "Erreur du serveur" });
+  }
+});
 
 // Récupération de tous les jeux Free-to-Play avec filtres optionnels
 app.get("/f2p-games", async (req, res) => {
