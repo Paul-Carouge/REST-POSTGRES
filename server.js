@@ -47,6 +47,27 @@ async function initializeDatabase() {
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `;
+
+    // Créer la table reviews si elle n'existe pas
+    await sql`
+      CREATE TABLE IF NOT EXISTS reviews (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        score INTEGER NOT NULL CHECK (score >= 1 AND score <= 5),
+        content TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id, product_id)
+      )
+    `;
+
+    // Ajouter les colonnes reviews_ids et total_score à la table products si elles n'existent pas
+    await sql`
+      ALTER TABLE products 
+      ADD COLUMN IF NOT EXISTS reviews_ids INTEGER[] DEFAULT '{}',
+      ADD COLUMN IF NOT EXISTS total_score DECIMAL(3,2) DEFAULT 0.00
+    `;
     
     console.log("🟢 Base de données initialisée avec succès");
   } catch (error) {
@@ -90,6 +111,51 @@ async function getOrderDetails(order) {
   };
 }
 
+// Fonction pour récupérer les détails complets d'un produit avec ses avis
+async function getProductDetails(product) {
+  // Récupérer les avis du produit
+  const reviews = await sql`
+    SELECT r.*, u.username, u.email 
+    FROM reviews r 
+    JOIN users u ON r.user_id = u.id 
+    WHERE r.product_id = ${product.id}
+    ORDER BY r.created_at DESC
+  `;
+
+  return {
+    ...product,
+    reviews
+  };
+}
+
+// Fonction pour mettre à jour le score total d'un produit
+async function updateProductScore(productId) {
+  // Calculer le nouveau score moyen
+  const [result] = await sql`
+    SELECT AVG(score) as avg_score, COUNT(*) as review_count
+    FROM reviews 
+    WHERE product_id = ${productId}
+  `;
+
+  const avgScore = result.avg_score ? Math.round(result.avg_score * 100) / 100 : 0;
+  const reviewCount = result.review_count || 0;
+
+  // Récupérer tous les IDs des avis
+  const reviews = await sql`
+    SELECT id FROM reviews WHERE product_id = ${productId} ORDER BY id
+  `;
+  const reviewIds = reviews.map(r => r.id);
+
+  // Mettre à jour le produit
+  await sql`
+    UPDATE products 
+    SET total_score = ${avgScore}, reviews_ids = ${reviewIds}
+    WHERE id = ${productId}
+  `;
+
+  return { avgScore, reviewCount };
+}
+
 // Schemas pour les produits
 const ProductSchema = z.object({
   name: z.string().min(1, "Le nom est requis"),
@@ -128,6 +194,19 @@ const OrderUpdateSchema = z.object({
   userId: z.number().int().positive("L'ID utilisateur doit être un entier positif").optional(),
   productIds: z.array(z.number().int().positive("L'ID produit doit être un entier positif")).min(1, "Au moins un produit est requis").optional(),
   payment: z.boolean().optional(),
+});
+
+// Schemas pour les avis
+const ReviewSchema = z.object({
+  userId: z.number().int().positive("L'ID utilisateur doit être un entier positif"),
+  productId: z.number().int().positive("L'ID produit doit être un entier positif"),
+  score: z.number().int().min(1, "Le score doit être au moins 1").max(5, "Le score doit être au maximum 5"),
+  content: z.string().min(1, "Le contenu de l'avis est requis").max(1000, "Le contenu ne peut pas dépasser 1000 caractères"),
+});
+
+const ReviewUpdateSchema = z.object({
+  score: z.number().int().min(1, "Le score doit être au moins 1").max(5, "Le score doit être au maximum 5").optional(),
+  content: z.string().min(1, "Le contenu de l'avis est requis").max(1000, "Le contenu ne peut pas dépasser 1000 caractères").optional(),
 });
 
 app.get("/", (req, res) => {
@@ -269,7 +348,10 @@ app.get("/products/:id", async (req, res) => {
       return res.status(404).json({ error: "Produit non trouvé" });
     }
 
-    res.json(product);
+    // Récupérer les détails complets avec les avis
+    const productWithReviews = await getProductDetails(product);
+
+    res.json(productWithReviews);
   } catch (error) {
     console.error("Erreur lors de la récupération du produit:", error);
     res.status(500).json({ error: "Erreur du serveur" });
@@ -943,6 +1025,307 @@ app.delete("/orders/:id", async (req, res) => {
     });
   } catch (error) {
     console.error("Erreur lors de la suppression de la commande:", error);
+    res.status(500).json({ error: "Erreur du serveur" });
+  }
+});
+
+// Routes pour la ressource "reviews" (Avis)
+
+// GET /reviews - Récupère tous les avis avec pagination
+app.get("/reviews", async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const offset = (page - 1) * limit;
+
+    const reviews = await sql`
+      SELECT r.*, u.username, u.email, p.name as product_name
+      FROM reviews r
+      JOIN users u ON r.user_id = u.id
+      JOIN products p ON r.product_id = p.id
+      ORDER BY r.created_at DESC 
+      LIMIT ${limit} OFFSET ${offset}
+    `;
+
+    // Compter le nombre total d'avis pour la pagination
+    const [{ count }] = await sql`SELECT COUNT(*) as count FROM reviews`;
+    const totalPages = Math.ceil(count / limit);
+
+    res.json({
+      reviews,
+      pagination: {
+        page,
+        limit,
+        total: count,
+        totalPages,
+        hasNext: page < totalPages,
+        hasPrev: page > 1
+      }
+    });
+  } catch (error) {
+    console.error("Erreur lors de la récupération des avis:", error);
+    res.status(500).json({ error: "Erreur du serveur" });
+  }
+});
+
+// Récupération d'un avis par son ID
+app.get("/reviews/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const [review] = await sql`
+      SELECT r.*, u.username, u.email, p.name as product_name
+      FROM reviews r
+      JOIN users u ON r.user_id = u.id
+      JOIN products p ON r.product_id = p.id
+      WHERE r.id = ${id}
+    `;
+
+    // Cas où l'avis n'existe pas
+    if (!review) {
+      return res.status(404).json({ error: "Avis non trouvé" });
+    }
+
+    res.json(review);
+  } catch (error) {
+    console.error("Erreur lors de la récupération de l'avis:", error);
+    res.status(500).json({ error: "Erreur du serveur" });
+  }
+});
+
+// Création d'un nouvel avis
+app.post("/reviews", async (req, res) => {
+  try {
+    const result = await ReviewSchema.safeParse(req.body);
+    
+    if (result.success) {
+      const { userId, productId, score, content } = result.data;
+
+      // Vérifier si l'utilisateur existe
+      const [user] = await sql`
+        SELECT id FROM users WHERE id = ${userId}
+      `;
+
+      if (!user) {
+        return res.status(404).json({ error: "Utilisateur non trouvé" });
+      }
+
+      // Vérifier si le produit existe
+      const [product] = await sql`
+        SELECT id FROM products WHERE id = ${productId}
+      `;
+
+      if (!product) {
+        return res.status(404).json({ error: "Produit non trouvé" });
+      }
+
+      // Vérifier si l'utilisateur a déjà laissé un avis pour ce produit
+      const [existingReview] = await sql`
+        SELECT id FROM reviews WHERE user_id = ${userId} AND product_id = ${productId}
+      `;
+
+      if (existingReview) {
+        return res.status(409).json({ 
+          error: "Vous avez déjà laissé un avis pour ce produit" 
+        });
+      }
+
+      const [newReview] = await sql`
+        INSERT INTO reviews (user_id, product_id, score, content)
+        VALUES (${userId}, ${productId}, ${score}, ${content})
+        RETURNING *
+      `;
+
+      // Mettre à jour le score du produit
+      await updateProductScore(productId);
+
+      // Récupérer l'avis avec les détails complets
+      const [reviewWithDetails] = await sql`
+        SELECT r.*, u.username, u.email, p.name as product_name
+        FROM reviews r
+        JOIN users u ON r.user_id = u.id
+        JOIN products p ON r.product_id = p.id
+        WHERE r.id = ${newReview.id}
+      `;
+
+      res.status(201).json(reviewWithDetails);
+    } else {
+      res.status(400).json({ 
+        error: "Données invalides", 
+        details: result.error.errors 
+      });
+    }
+  } catch (error) {
+    console.error("Erreur lors de la création de l'avis:", error);
+    res.status(500).json({ error: "Erreur du serveur" });
+  }
+});
+
+// Mise à jour complète d'un avis
+app.put("/reviews/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await ReviewUpdateSchema.safeParse(req.body);
+    
+    if (result.success) {
+      const { score, content } = result.data;
+      
+      // Vérifier si l'avis existe
+      const [existingReview] = await sql`
+        SELECT * FROM reviews WHERE id = ${id}
+      `;
+
+      if (!existingReview) {
+        return res.status(404).json({ error: "Avis non trouvé" });
+      }
+
+      // Vérifier qu'au moins un champ est fourni
+      if (score === undefined && content === undefined) {
+        return res.status(400).json({ error: "Aucune donnée à mettre à jour" });
+      }
+
+      // Construire la requête SQL de manière conditionnelle
+      let updatedReview;
+      if (score !== undefined && content !== undefined) {
+        [updatedReview] = await sql`
+          UPDATE reviews SET score = ${score}, content = ${content}, updated_at = CURRENT_TIMESTAMP WHERE id = ${id} RETURNING *
+        `;
+      } else if (score !== undefined) {
+        [updatedReview] = await sql`
+          UPDATE reviews SET score = ${score}, updated_at = CURRENT_TIMESTAMP WHERE id = ${id} RETURNING *
+        `;
+      } else if (content !== undefined) {
+        [updatedReview] = await sql`
+          UPDATE reviews SET content = ${content}, updated_at = CURRENT_TIMESTAMP WHERE id = ${id} RETURNING *
+        `;
+      }
+
+      // Mettre à jour le score du produit
+      await updateProductScore(updatedReview.product_id);
+
+      // Récupérer l'avis avec les détails complets
+      const [reviewWithDetails] = await sql`
+        SELECT r.*, u.username, u.email, p.name as product_name
+        FROM reviews r
+        JOIN users u ON r.user_id = u.id
+        JOIN products p ON r.product_id = p.id
+        WHERE r.id = ${id}
+      `;
+
+      res.json(reviewWithDetails);
+    } else {
+      res.status(400).json({ 
+        error: "Données invalides", 
+        details: result.error.errors 
+      });
+    }
+  } catch (error) {
+    console.error("Erreur lors de la mise à jour de l'avis:", error);
+    res.status(500).json({ error: "Erreur du serveur" });
+  }
+});
+
+// Mise à jour partielle d'un avis
+app.patch("/reviews/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await ReviewUpdateSchema.safeParse(req.body);
+    
+    if (result.success) {
+      const { score, content } = result.data;
+      
+      // Vérifier si l'avis existe
+      const [existingReview] = await sql`
+        SELECT * FROM reviews WHERE id = ${id}
+      `;
+
+      if (!existingReview) {
+        return res.status(404).json({ error: "Avis non trouvé" });
+      }
+
+      // Vérifier qu'au moins un champ est fourni
+      if (score === undefined && content === undefined) {
+        return res.status(400).json({ error: "Aucune donnée à mettre à jour" });
+      }
+
+      // Construire la requête SQL de manière conditionnelle
+      let updatedReview;
+      if (score !== undefined && content !== undefined) {
+        [updatedReview] = await sql`
+          UPDATE reviews SET score = ${score}, content = ${content}, updated_at = CURRENT_TIMESTAMP WHERE id = ${id} RETURNING *
+        `;
+      } else if (score !== undefined) {
+        [updatedReview] = await sql`
+          UPDATE reviews SET score = ${score}, updated_at = CURRENT_TIMESTAMP WHERE id = ${id} RETURNING *
+        `;
+      } else if (content !== undefined) {
+        [updatedReview] = await sql`
+          UPDATE reviews SET content = ${content}, updated_at = CURRENT_TIMESTAMP WHERE id = ${id} RETURNING *
+        `;
+      }
+
+      // Mettre à jour le score du produit
+      await updateProductScore(updatedReview.product_id);
+
+      // Récupérer l'avis avec les détails complets
+      const [reviewWithDetails] = await sql`
+        SELECT r.*, u.username, u.email, p.name as product_name
+        FROM reviews r
+        JOIN users u ON r.user_id = u.id
+        JOIN products p ON r.product_id = p.id
+        WHERE r.id = ${id}
+      `;
+
+      res.json(reviewWithDetails);
+    } else {
+      res.status(400).json({ 
+        error: "Données invalides", 
+        details: result.error.errors 
+      });
+    }
+  } catch (error) {
+    console.error("Erreur lors de la mise à jour partielle de l'avis:", error);
+    res.status(500).json({ error: "Erreur du serveur" });
+  }
+});
+
+// Suppression d'un avis
+app.delete("/reviews/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Récupérer l'avis avant suppression pour avoir le product_id
+    const [reviewToDelete] = await sql`
+      SELECT * FROM reviews WHERE id = ${id}
+    `;
+
+    if (!reviewToDelete) {
+      return res.status(404).json({ error: "Avis non trouvé" });
+    }
+
+    const [deletedReview] = await sql`
+      DELETE FROM reviews WHERE id = ${id}
+      RETURNING *
+    `;
+
+    // Mettre à jour le score du produit
+    await updateProductScore(reviewToDelete.product_id);
+
+    // Récupérer l'avis avec les détails complets avant suppression
+    const [reviewWithDetails] = await sql`
+      SELECT r.*, u.username, u.email, p.name as product_name
+      FROM reviews r
+      JOIN users u ON r.user_id = u.id
+      JOIN products p ON r.product_id = p.id
+      WHERE r.id = ${id}
+    `;
+
+    res.json({ 
+      message: "Avis supprimé avec succès", 
+      review: reviewWithDetails 
+    });
+  } catch (error) {
+    console.error("Erreur lors de la suppression de l'avis:", error);
     res.status(500).json({ error: "Erreur du serveur" });
   }
 });
