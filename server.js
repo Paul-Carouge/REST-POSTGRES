@@ -2,12 +2,165 @@ const express = require("express");
 const postgres = require("postgres");
 const z = require("zod");
 const crypto = require("crypto");
+const swaggerJsdoc = require("swagger-jsdoc");
+const swaggerUi = require("swagger-ui-express");
 
 const app = express();
 const port = 8000;
 const sql = postgres({ db: "mydb", user: "user", password: "password" });
 
+// Configuration Swagger/OpenAPI
+const swaggerOptions = {
+  definition: {
+    openapi: "3.0.0",
+    info: {
+      title: "Marketplace API",
+      version: "1.0.0",
+      description: "API REST complète pour une marketplace avec produits, utilisateurs, commandes, avis et jeux Free-to-Play",
+      contact: {
+        name: "Support API",
+        email: "support@marketplace.com"
+      },
+      license: {
+        name: "MIT",
+        url: "https://opensource.org/licenses/MIT"
+      }
+    },
+    servers: [
+      {
+        url: "http://localhost:8000",
+        description: "Serveur de développement"
+      }
+    ],
+    components: {
+      schemas: {
+        Product: {
+          type: "object",
+          properties: {
+            id: { type: "integer", example: 1 },
+            name: { type: "string", example: "Produit Premium" },
+            about: { type: "string", example: "Description détaillée du produit" },
+            price: { type: "number", format: "decimal", example: 29.99 },
+            total_score: { type: "number", format: "decimal", example: 4.5 },
+            reviews_ids: { type: "array", items: { type: "integer" }, example: [1, 2, 3] },
+            created_at: { type: "string", format: "date-time" }
+          }
+        },
+        User: {
+          type: "object",
+          properties: {
+            id: { type: "integer", example: 1 },
+            username: { type: "string", example: "john_doe" },
+            email: { type: "string", format: "email", example: "john@example.com" },
+            created_at: { type: "string", format: "date-time" },
+            updated_at: { type: "string", format: "date-time" }
+          }
+        },
+        Order: {
+          type: "object",
+          properties: {
+            id: { type: "integer", example: 1 },
+            user_id: { type: "integer", example: 1 },
+            product_ids: { type: "array", items: { type: "integer" }, example: [1, 2, 3] },
+            total: { type: "number", format: "decimal", example: 36.00 },
+            payment: { type: "boolean", example: false },
+            created_at: { type: "string", format: "date-time" },
+            updated_at: { type: "string", format: "date-time" },
+            user: { $ref: "#/components/schemas/User" },
+            products: { type: "array", items: { $ref: "#/components/schemas/Product" } }
+          }
+        },
+        Review: {
+          type: "object",
+          properties: {
+            id: { type: "integer", example: 1 },
+            user_id: { type: "integer", example: 1 },
+            product_id: { type: "integer", example: 1 },
+            score: { type: "integer", minimum: 1, maximum: 5, example: 5 },
+            content: { type: "string", example: "Excellent produit !" },
+            created_at: { type: "string", format: "date-time" },
+            updated_at: { type: "string", format: "date-time" },
+            username: { type: "string", example: "john_doe" },
+            email: { type: "string", example: "john@example.com" },
+            product_name: { type: "string", example: "Produit 1" }
+          }
+        },
+        Game: {
+          type: "object",
+          properties: {
+            id: { type: "string", example: "game_452" },
+            name: { type: "string", example: "World of Tanks" },
+            about: { type: "string", example: "Free-to-play tank warfare game" },
+            price: { type: "number", example: 0 },
+            game_url: { type: "string", example: "https://www.freetogame.com/game/world-of-tanks" },
+            genre: { type: "string", example: "Shooter" },
+            platform: { type: "string", example: "PC" },
+            thumbnail: { type: "string" },
+            publisher: { type: "string", example: "Wargaming" },
+            developer: { type: "string", example: "Wargaming" },
+            release_date: { type: "string", example: "2011-04-12" },
+            is_free_to_play: { type: "boolean", example: true }
+          }
+        },
+        Error: {
+          type: "object",
+          properties: {
+            error: { type: "string", example: "Message d'erreur" },
+            details: { type: "array", items: { type: "object" } }
+          }
+        },
+        Pagination: {
+          type: "object",
+          properties: {
+            page: { type: "integer", example: 1 },
+            limit: { type: "integer", example: 10 },
+            total: { type: "integer", example: 100 },
+            totalPages: { type: "integer", example: 10 },
+            hasNext: { type: "boolean", example: true },
+            hasPrev: { type: "boolean", example: false }
+          }
+        }
+      },
+      responses: {
+        NotFound: {
+          description: "Ressource non trouvée",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/Error" }
+            }
+          }
+        },
+        BadRequest: {
+          description: "Données invalides",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/Error" }
+            }
+          }
+        },
+        ServerError: {
+          description: "Erreur interne du serveur",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/Error" }
+            }
+          }
+        }
+      }
+    }
+  },
+  apis: ["./server.js"]
+};
+
+const specs = swaggerJsdoc(swaggerOptions);
+
 app.use(express.json());
+
+// Route Swagger UI
+app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(specs, {
+  customCss: '.swagger-ui .topbar { display: none }',
+  customSiteTitle: "Marketplace API Documentation"
+}));
 
 // Initialisation de la base de données
 async function initializeDatabase() {
@@ -209,10 +362,95 @@ const ReviewUpdateSchema = z.object({
   content: z.string().min(1, "Le contenu de l'avis est requis").max(1000, "Le contenu ne peut pas dépasser 1000 caractères").optional(),
 });
 
+/**
+ * @swagger
+ * /:
+ *   get:
+ *     summary: Page d'accueil de l'API
+ *     description: Route de test pour vérifier que l'API fonctionne
+ *     tags: [Accueil]
+ *     responses:
+ *       200:
+ *         description: Message de bienvenue
+ *         content:
+ *           text/plain:
+ *             schema:
+ *               type: string
+ *               example: "Hello World!"
+ */
 app.get("/", (req, res) => {
   res.send("Hello World!");
 });
 
+/**
+ * @swagger
+ * /products:
+ *   get:
+ *     summary: Récupère tous les produits ou recherche des jeux Free-to-Play
+ *     description: |
+ *       Récupère la liste des produits avec pagination. 
+ *       Si des paramètres de recherche sont fournis (name, about, price), 
+ *       utilise l'API FreeToGame pour rechercher des jeux Free-to-Play.
+ *     tags: [Produits]
+ *     parameters:
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *         description: Numéro de page pour la pagination
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 10
+ *         description: Nombre d'éléments par page
+ *       - in: query
+ *         name: name
+ *         schema:
+ *           type: string
+ *         description: Recherche de jeux par nom (active l'API FreeToGame)
+ *       - in: query
+ *         name: about
+ *         schema:
+ *           type: string
+ *         description: Recherche de jeux par description/genre (active l'API FreeToGame)
+ *       - in: query
+ *         name: price
+ *         schema:
+ *           type: number
+ *         description: Recherche de jeux par prix maximum (active l'API FreeToGame)
+ *     responses:
+ *       200:
+ *         description: Liste des produits ou jeux trouvés
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 products:
+ *                   type: array
+ *                   items:
+ *                     oneOf:
+ *                       - $ref: '#/components/schemas/Product'
+ *                       - $ref: '#/components/schemas/Game'
+ *                 pagination:
+ *                   $ref: '#/components/schemas/Pagination'
+ *                 searchType:
+ *                   type: string
+ *                   enum: [free-to-play-games, database-products]
+ *                 filters:
+ *                   type: object
+ *                   properties:
+ *                     name:
+ *                       type: string
+ *                     about:
+ *                       type: string
+ *                     price:
+ *                       type: number
+ *       500:
+ *         $ref: '#/components/responses/ServerError'
+ */
 // Récupération de tous les produits avec pagination et recherche de jeux Free-to-Play
 app.get("/products", async (req, res) => {
   try {
@@ -334,6 +572,39 @@ app.get("/products", async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /products/{id}:
+ *   get:
+ *     summary: Récupère un produit par son ID
+ *     description: Récupère les détails complets d'un produit, y compris tous ses avis
+ *     tags: [Produits]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: ID du produit
+ *     responses:
+ *       200:
+ *         description: Détails du produit avec ses avis
+ *         content:
+ *           application/json:
+ *             schema:
+ *               allOf:
+ *                 - $ref: '#/components/schemas/Product'
+ *                 - type: object
+ *                   properties:
+ *                     reviews:
+ *                       type: array
+ *                       items:
+ *                         $ref: '#/components/schemas/Review'
+ *       404:
+ *         $ref: '#/components/responses/NotFound'
+ *       500:
+ *         $ref: '#/components/responses/ServerError'
+ */
 // Récupération d'un produit par son ID
 app.get("/products/:id", async (req, res) => {
   try {
@@ -358,6 +629,48 @@ app.get("/products/:id", async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /products:
+ *   post:
+ *     summary: Crée un nouveau produit
+ *     description: Crée un nouveau produit dans la base de données
+ *     tags: [Produits]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - name
+ *               - about
+ *               - price
+ *             properties:
+ *               name:
+ *                 type: string
+ *                 minLength: 1
+ *                 example: "Produit Premium"
+ *               about:
+ *                 type: string
+ *                 minLength: 1
+ *                 example: "Description détaillée du produit"
+ *               price:
+ *                 type: number
+ *                 minimum: 0.01
+ *                 example: 29.99
+ *     responses:
+ *       200:
+ *         description: Produit créé avec succès
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Product'
+ *       400:
+ *         $ref: '#/components/responses/BadRequest'
+ *       500:
+ *         $ref: '#/components/responses/ServerError'
+ */
 // Créer un nouveau produit
 app.post("/products", async (req, res) => {
   const result = await ProductSchema.safeParse(req.body);
@@ -378,6 +691,38 @@ app.post("/products", async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /products/{id}:
+ *   delete:
+ *     summary: Supprime un produit
+ *     description: Supprime un produit et tous ses avis associés
+ *     tags: [Produits]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: ID du produit à supprimer
+ *     responses:
+ *       200:
+ *         description: Produit supprimé avec succès
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: "Produit supprimé avec succès"
+ *                 product:
+ *                   $ref: '#/components/schemas/Product'
+ *       404:
+ *         $ref: '#/components/responses/NotFound'
+ *       500:
+ *         $ref: '#/components/responses/ServerError'
+ */
 // Supprime un produit grace à son ID
 app.delete("/products/:id", async (req, res) => {
   try {
@@ -400,6 +745,43 @@ app.delete("/products/:id", async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /users:
+ *   get:
+ *     summary: Récupère tous les utilisateurs
+ *     description: Récupère la liste des utilisateurs avec pagination (mots de passe exclus)
+ *     tags: [Utilisateurs]
+ *     parameters:
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *         description: Numéro de page pour la pagination
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 10
+ *         description: Nombre d'éléments par page
+ *     responses:
+ *       200:
+ *         description: Liste des utilisateurs
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 users:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/User'
+ *                 pagination:
+ *                   $ref: '#/components/schemas/Pagination'
+ *       500:
+ *         $ref: '#/components/responses/ServerError'
+ */
 // Récupération de tous les utilisateurs avec pagination de 10 utilisateurs par page
 app.get("/users", async (req, res) => {
   try {
@@ -457,6 +839,58 @@ app.get("/users/:id", async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /users:
+ *   post:
+ *     summary: Crée un nouvel utilisateur
+ *     description: Crée un nouvel utilisateur avec mot de passe haché en SHA512
+ *     tags: [Utilisateurs]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - username
+ *               - email
+ *               - password
+ *             properties:
+ *               username:
+ *                 type: string
+ *                 minLength: 3
+ *                 example: "john_doe"
+ *               email:
+ *                 type: string
+ *                 format: email
+ *                 example: "john@example.com"
+ *               password:
+ *                 type: string
+ *                 minLength: 6
+ *                 example: "motdepasse123"
+ *     responses:
+ *       201:
+ *         description: Utilisateur créé avec succès
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/User'
+ *       400:
+ *         $ref: '#/components/responses/BadRequest'
+ *       409:
+ *         description: Conflit - Utilisateur déjà existant
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: "Un utilisateur avec ce nom d'utilisateur ou cet email existe déjà"
+ *       500:
+ *         $ref: '#/components/responses/ServerError'
+ */
 // Création d'un nouvel utilisateur
 app.post("/users", async (req, res) => {
   try {
@@ -687,6 +1121,43 @@ app.delete("/users/:id", async (req, res) => {
 
 
 
+/**
+ * @swagger
+ * /orders:
+ *   get:
+ *     summary: Récupère toutes les commandes
+ *     description: Récupère la liste des commandes avec pagination et détails complets (utilisateur + produits)
+ *     tags: [Commandes]
+ *     parameters:
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *         description: Numéro de page pour la pagination
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 10
+ *         description: Nombre d'éléments par page
+ *     responses:
+ *       200:
+ *         description: Liste des commandes avec détails complets
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 orders:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/Order'
+ *                 pagination:
+ *                   $ref: '#/components/schemas/Pagination'
+ *       500:
+ *         $ref: '#/components/responses/ServerError'
+ */
 // Récupération de toutes les commandes avec pagination de 10 commandes par page
 app.get("/orders", async (req, res) => {
   try {
@@ -750,6 +1221,56 @@ app.get("/orders/:id", async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /orders:
+ *   post:
+ *     summary: Crée une nouvelle commande
+ *     description: Crée une nouvelle commande avec calcul automatique du total avec TVA (20%)
+ *     tags: [Commandes]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - userId
+ *               - productIds
+ *             properties:
+ *               userId:
+ *                 type: integer
+ *                 minimum: 1
+ *                 example: 1
+ *               productIds:
+ *                 type: array
+ *                 items:
+ *                   type: integer
+ *                   minimum: 1
+ *                 minItems: 1
+ *                 example: [1, 2, 3]
+ *     responses:
+ *       201:
+ *         description: Commande créée avec succès
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Order'
+ *       400:
+ *         $ref: '#/components/responses/BadRequest'
+ *       404:
+ *         description: Utilisateur ou produit non trouvé
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: "Utilisateur non trouvé"
+ *       500:
+ *         $ref: '#/components/responses/ServerError'
+ */
 // Création d'une nouvelle commande
 app.post("/orders", async (req, res) => {
   try {
@@ -1031,6 +1552,43 @@ app.delete("/orders/:id", async (req, res) => {
 
 // Routes pour la ressource "reviews" (Avis)
 
+/**
+ * @swagger
+ * /reviews:
+ *   get:
+ *     summary: Récupère tous les avis
+ *     description: Récupère la liste des avis avec pagination et détails complets (utilisateur + produit)
+ *     tags: [Avis]
+ *     parameters:
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *         description: Numéro de page pour la pagination
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 10
+ *         description: Nombre d'éléments par page
+ *     responses:
+ *       200:
+ *         description: Liste des avis avec détails complets
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 reviews:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/Review'
+ *                 pagination:
+ *                   $ref: '#/components/schemas/Pagination'
+ *       500:
+ *         $ref: '#/components/responses/ServerError'
+ */
 // GET /reviews - Récupère tous les avis avec pagination
 app.get("/reviews", async (req, res) => {
   try {
@@ -1093,6 +1651,75 @@ app.get("/reviews/:id", async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /reviews:
+ *   post:
+ *     summary: Crée un nouvel avis
+ *     description: Crée un nouvel avis et met à jour automatiquement le score du produit
+ *     tags: [Avis]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - userId
+ *               - productId
+ *               - score
+ *               - content
+ *             properties:
+ *               userId:
+ *                 type: integer
+ *                 minimum: 1
+ *                 example: 1
+ *               productId:
+ *                 type: integer
+ *                 minimum: 1
+ *                 example: 1
+ *               score:
+ *                 type: integer
+ *                 minimum: 1
+ *                 maximum: 5
+ *                 example: 5
+ *               content:
+ *                 type: string
+ *                 minLength: 1
+ *                 maxLength: 1000
+ *                 example: "Excellent produit, je recommande !"
+ *     responses:
+ *       201:
+ *         description: Avis créé avec succès
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Review'
+ *       400:
+ *         $ref: '#/components/responses/BadRequest'
+ *       404:
+ *         description: Utilisateur ou produit non trouvé
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: "Utilisateur non trouvé"
+ *       409:
+ *         description: Conflit - Avis déjà existant
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: "Vous avez déjà laissé un avis pour ce produit"
+ *       500:
+ *         $ref: '#/components/responses/ServerError'
+ */
 // Création d'un nouvel avis
 app.post("/reviews", async (req, res) => {
   try {
@@ -1330,6 +1957,79 @@ app.delete("/reviews/:id", async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /f2p-games:
+ *   get:
+ *     summary: Récupère des jeux Free-to-Play
+ *     description: Récupère des jeux Free-to-Play depuis l'API FreeToGame avec filtres optionnels
+ *     tags: [Jeux Free-to-Play]
+ *     parameters:
+ *       - in: query
+ *         name: platform
+ *         schema:
+ *           type: string
+ *           enum: [pc, browser, all]
+ *         description: Plateforme des jeux (pc, browser, all)
+ *       - in: query
+ *         name: category
+ *         schema:
+ *           type: string
+ *         description: Catégorie des jeux (mmorpg, shooter, pvp, etc.)
+ *       - in: query
+ *         name: sortBy
+ *         schema:
+ *           type: string
+ *           enum: [release-date, popularity, alphabetical, relevance]
+ *         description: Méthode de tri
+ *       - in: query
+ *         name: tag
+ *         schema:
+ *           type: string
+ *         description: Tags multiples séparés par des points (ex: 3d.mmorpg.fantasy.pvp)
+ *     responses:
+ *       200:
+ *         description: Liste des jeux Free-to-Play
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 games:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/Game'
+ *                 total:
+ *                   type: integer
+ *                   example: 150
+ *                 filters:
+ *                   type: object
+ *                   properties:
+ *                     platform:
+ *                       type: string
+ *                     category:
+ *                       type: string
+ *                     sortBy:
+ *                       type: string
+ *                     tag:
+ *                       type: string
+ *                 apiSource:
+ *                   type: string
+ *                   example: "FreeToGame API"
+ *       500:
+ *         description: Erreur lors de la récupération des jeux
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: "Erreur lors de la récupération des jeux"
+ *                 details:
+ *                   type: string
+ *                   example: "Erreur API FreeToGame: 500 Internal Server Error"
+ */
 // Récupération de tous les jeux Free-to-Play avec filtres optionnels
 app.get("/f2p-games", async (req, res) => {
   try {
