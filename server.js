@@ -8,12 +8,32 @@ const sql = postgres({ db: "mydb", user: "user", password: "password" });
 
 app.use(express.json());
 
+// Initialisation de la base de données
+async function initializeDatabase() {
+  try {
+    // Créer la table products si elle n'existe pas
+    await sql`
+      CREATE TABLE IF NOT EXISTS products (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        about TEXT NOT NULL,
+        price DECIMAL(10,2) NOT NULL CHECK (price > 0),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `;
+    
+    console.log("Base de données initialisée avec succès");
+  } catch (error) {
+    console.error("Erreur lors de l'initialisation de la base de données:", error);
+    process.exit(1);
+  }
+}
+
 // Schemas
 const ProductSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  about: z.string(),
-  price: z.number().positive(),
+  name: z.string().min(1, "Le nom est requis"),
+  about: z.string().min(1, "La description est requise"),
+  price: z.number().positive("Le prix doit être positif"),
 });
 
 app.get("/", (req, res) => {
@@ -119,6 +139,13 @@ app.delete("/products/:id", async (req, res) => {
   }
 });
 
-app.listen(port, () => {
-  console.log(`Listening on http://localhost:${port}`);
-});
+// Démarrage du serveur avec initialisation de la base de données
+async function startServer() {
+  await initializeDatabase();
+  
+  app.listen(port, () => {
+    console.log(`🚀 Serveur démarré sur http://localhost:${port}`);
+  });
+}
+
+startServer();
