@@ -2,12 +2,12 @@ const swaggerOptions = {
   definition: {
     openapi: "3.0.0",
     info: {
-      title: "Marketplace API",
+      title: "Paul Carouge API",
       version: "1.0.0",
-      description: "API REST complète pour une marketplace avec produits, utilisateurs, commandes, avis et jeux Free-to-Play",
+      description: "Une API REST basé sur le TP de Service Web avec Produits, Utilisateurs, Commandes, Avis et Jeux Free-to-Play",
       contact: {
-        name: "Support API",
-        email: "support@marketplace.com"
+        name: "Paul Carouge",
+        email: "contact.carouge@gmail.com"
       },
       license: {
         name: "MIT",
@@ -17,7 +17,7 @@ const swaggerOptions = {
     servers: [
       {
         url: "http://localhost:8000",
-        description: "Serveur de développement"
+        description: "Serveur de développement local pendant le TP de Service Web"
       }
     ],
     components: {
