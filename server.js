@@ -79,33 +79,121 @@ app.get("/", (req, res) => {
   res.send("Hello World!");
 });
 
-// Récupération de tous les produits avec pagination de 10 produits par page
+// Récupération de tous les produits avec pagination et recherche de jeux Free-to-Play
 app.get("/products", async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const offset = (page - 1) * limit;
+    
+    // Paramètres de recherche pour les jeux
+    const { name, about, price } = req.query;
+    
+    let products = [];
+    let totalCount = 0;
+    let isGameSearch = false;
 
-    const products = await sql`
-      SELECT * FROM products 
-      ORDER BY id 
-      LIMIT ${limit} OFFSET ${offset}
-    `;
+    // Si on a des paramètres de recherche de jeux, utiliser l'API FreeToGame
+    if (name || about || price) {
+      isGameSearch = true;
+      console.log("🎮 Recherche de jeux Free-to-Play avec les paramètres:", { name, about, price });
+      
+      try {
+        // Récupérer tous les jeux depuis l'API FreeToGame
+        const response = await fetch("https://www.freetogame.com/api/games");
+        
+        if (!response.ok) {
+          throw new Error(`Erreur API FreeToGame: ${response.status} ${response.statusText}`);
+        }
+        
+        let games = await response.json();
+        
+        // Filtrer les jeux selon les critères
+        if (name) {
+          games = games.filter(game => 
+            game.title.toLowerCase().includes(name.toLowerCase())
+          );
+        }
+        
+        if (about) {
+          games = games.filter(game => 
+            game.short_description.toLowerCase().includes(about.toLowerCase()) ||
+            game.genre.toLowerCase().includes(about.toLowerCase())
+          );
+        }
+        
+        if (price) {
+          const maxPrice = parseFloat(price);
+          if (!isNaN(maxPrice)) {
+            // Les jeux Free-to-Play ont un prix de 0, mais on peut filtrer par popularité
+            // ou garder tous les jeux car ils sont gratuits
+            games = games.filter(game => {
+              // Si le jeu a un prix, on le compare
+              if (game.price) {
+                return parseFloat(game.price) <= maxPrice;
+              }
+              // Sinon c'est un jeu gratuit (prix 0)
+              return true;
+            });
+          }
+        }
+        
+        // Appliquer la pagination
+        totalCount = games.length;
+        const startIndex = offset;
+        const endIndex = startIndex + limit;
+        products = games.slice(startIndex, endIndex);
+        
+        // Transformer les jeux en format produit
+        products = products.map(game => ({
+          id: `game_${game.id}`,
+          name: game.title,
+          about: game.short_description,
+          price: 0, // Les jeux Free-to-Play sont gratuits
+          game_url: game.game_url,
+          genre: game.genre,
+          platform: game.platform,
+          thumbnail: game.thumbnail,
+          publisher: game.publisher,
+          developer: game.developer,
+          release_date: game.release_date,
+          is_free_to_play: true
+        }));
+        
+      } catch (apiError) {
+        console.error("Erreur lors de l'appel à l'API FreeToGame:", apiError);
+        // En cas d'erreur API, on continue avec les produits de la base de données
+        isGameSearch = false;
+      }
+    }
+    
+    // Si ce n'est pas une recherche de jeux ou si l'API a échoué, utiliser la base de données
+    if (!isGameSearch) {
+      products = await sql`
+        SELECT * FROM products 
+        ORDER BY id 
+        LIMIT ${limit} OFFSET ${offset}
+      `;
 
-    // Permet de compté le nombre total de produits pour la pagination
-    const [{ count }] = await sql`SELECT COUNT(*) as count FROM products`;
-    const totalPages = Math.ceil(count / limit);
+      // Compter le nombre total de produits pour la pagination
+      const [{ count }] = await sql`SELECT COUNT(*) as count FROM products`;
+      totalCount = count;
+    }
+
+    const totalPages = Math.ceil(totalCount / limit);
 
     res.json({
       products,
       pagination: {
         page,
         limit,
-        total: count,
+        total: totalCount,
         totalPages,
         hasNext: page < totalPages,
         hasPrev: page > 1
-      }
+      },
+      searchType: isGameSearch ? "free-to-play-games" : "database-products",
+      filters: isGameSearch ? { name, about, price } : null
     });
   } catch (error) {
     console.error("Erreur lors de la récupération des produits:", error);
