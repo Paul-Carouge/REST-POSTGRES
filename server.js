@@ -79,27 +79,21 @@ app.get("/products/:id", async (req, res) => {
 
 // Créer un nouveau produit
 app.post("/products", async (req, res) => {
-  try {
-    // Validation des données avec Zod
-    const validatedData = ProductSchema.parse(req.body);
-    
-    const [newProduct] = await sql`
-      INSERT INTO products (id, name, about, price)
-      VALUES (${validatedData.id}, ${validatedData.name}, ${validatedData.about}, ${validatedData.price})
-      RETURNING *
+  const result = await ProductSchema.safeParse(req.body);
+ 
+  // Si Zod a réussi à parser le corps de la requête
+  if (result.success) {
+    const { name, about, price } = result.data;
+ 
+    const product = await sql`
+    INSERT INTO products (name, about, price)
+    VALUES (${name}, ${about}, ${price})
+    RETURNING *
     `;
-
-    res.status(201).json(newProduct);
-  } catch (error) {
-    if (error instanceof z.ZodError) {
-      return res.status(400).json({ 
-        error: "Données invalides", 
-        details: error.errors 
-      });
-    }
-    
-    console.error("Erreur lors de la création du produit:", error);
-    res.status(500).json({ error: "Erreur du serveur" });
+ 
+    res.send(product[0]);
+  } else {
+    res.status(400).send(result);
   }
 });
 
