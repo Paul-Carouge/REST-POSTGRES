@@ -22,9 +22,9 @@ async function initializeDatabase() {
       )
     `;
     
-    console.log("Base de données initialisée avec succès");
+    console.log("🟢 Base de données initialisée avec succès");
   } catch (error) {
-    console.error("Erreur lors de l'initialisation de la base de données:", error);
+    console.error("🔴 Erreur lors de l'initialisation de la base de données:", error);
     process.exit(1);
   }
 }
@@ -142,7 +142,7 @@ async function startServer() {
   await initializeDatabase();
   
   app.listen(port, () => {
-    console.log(`🚀 Serveur démarré sur http://localhost:${port}`);
+    console.log(`🟢 Le serveur est lancé sur http://localhost:${port}`);
   });
 }
 
